@@ -3,10 +3,10 @@ package service
 import (
 	"fmt"
 	"github.com/assimon/luuu/model/data"
+	"github.com/assimon/luuu/model/mdb"
 	"github.com/assimon/luuu/model/request"
 	"github.com/assimon/luuu/mq"
 	"github.com/assimon/luuu/mq/handle"
-	"github.com/assimon/luuu/telegram"
 	"github.com/assimon/luuu/util/http_client"
 	"github.com/assimon/luuu/util/json"
 	"github.com/assimon/luuu/util/log"
@@ -19,6 +19,21 @@ import (
 )
 
 const UsdtTrc20ApiUri = "https://apilist.tronscanapi.com/api/transfer/trc20"
+
+// UsdtTrc20ContractAddress 官方 USDT-TRC20 合约地址
+// 链上认款时必须逐条校验转账的合约地址等于此值，
+// 防止攻击者用同名/同额的山寨 TRC20 代币冒充 USDT 骗过订单。
+const UsdtTrc20ContractAddress = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+
+// OrderNotifier 支付成功通知回调（由 telegram 包在启动时注入 SendToBot）。
+// 通过依赖注入避免 service 直接 import telegram 造成的 import 循环。
+var OrderNotifier func(msg string)
+
+func notifyBot(msg string) {
+	if OrderNotifier != nil {
+		OrderNotifier(msg)
+	}
+}
 
 type UsdtTrc20Resp struct {
 	PageSize int    `json:"page_size"`
@@ -86,7 +101,8 @@ func Trc20CallBack(token string, wg *sync.WaitGroup) {
 		panic(err)
 	}
 	if resp.StatusCode() != http.StatusOK {
-		panic(err)
+		// 此处 err 必为 nil，直接 panic(err) 会被 recover 成 nil 静默吞掉，携带真实状态码
+		panic(fmt.Errorf("trc20 api abnormal http status: %d", resp.StatusCode()))
 	}
 	var trc20Resp UsdtTrc20Resp
 	err = json.Cjson.Unmarshal(resp.Body(), &trc20Resp)
@@ -98,6 +114,14 @@ func Trc20CallBack(token string, wg *sync.WaitGroup) {
 	}
 	for _, transfer := range trc20Resp.Data {
 		if transfer.To != token || transfer.ContractRet != "SUCCESS" {
+			continue
+		}
+		// 必须是官方 USDT 合约，杜绝山寨 TRC20 代币冒充（transfer.ID 为该笔转账的代币合约地址）
+		if transfer.ID != UsdtTrc20ContractAddress {
+			continue
+		}
+		// 必须已确认且未回滚，避免 0 确认 / 被回滚交易造成的双花误认款
+		if transfer.Confirmed != 1 || transfer.Revert != 0 {
 			continue
 		}
 		decimalQuant, err := decimal.NewFromString(transfer.Amount)
@@ -133,6 +157,10 @@ func Trc20CallBack(token string, wg *sync.WaitGroup) {
 		if err != nil {
 			panic(err)
 		}
+		// order 是在 OrderProcessing 之前读出的，此处补齐链上交易号与状态，
+		// 否则回调给商户的 block_transaction_id 会是空字符串
+		order.BlockTransactionId = transfer.Hash
+		order.Status = mdb.StatusPaySuccess
 		// 回调队列
 		orderCallbackQueue, _ := handle.NewOrderCallbackQueue(order)
 		mq.MClient.Enqueue(orderCallbackQueue, asynq.MaxRetry(5))
@@ -148,6 +176,6 @@ func Trc20CallBack(token string, wg *sync.WaitGroup) {
 <pre>支付成功时间：%s</pre>
 `
 		msg := fmt.Sprintf(msgTpl, order.TradeId, order.OrderId, order.Amount, order.ActualAmount, order.Token, order.CreatedAt.ToDateTimeString(), carbon.Now().ToDateTimeString())
-		telegram.SendToBot(msg)
+		notifyBot(msg)
 	}
 }

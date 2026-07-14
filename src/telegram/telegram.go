@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"github.com/assimon/luuu/config"
+	"github.com/assimon/luuu/model/service"
 	"github.com/assimon/luuu/util/log"
 	tb "gopkg.in/telebot.v3"
 	"gopkg.in/telebot.v3/middleware"
@@ -25,6 +26,8 @@ func BotStart() {
 		log.Sugar.Error(err.Error())
 		return
 	}
+	// 注入支付成功通知，避免 service 直接依赖 telegram 形成 import 循环
+	service.OrderNotifier = SendToBot
 	err = bots.SetCommands(Cmds)
 	if err != nil {
 		log.Sugar.Error(err.Error())
@@ -39,6 +42,8 @@ func RegisterHandle() {
 	adminOnly := bots.Group()
 	adminOnly.Use(middleware.Whitelist(config.TgManage))
 	adminOnly.Handle(START_CMD, WalletList)
+	adminOnly.Handle(REPAIR_CMD, OrderRepairHandle)
+	adminOnly.Handle(NOTIFY_CMD, OrderNotifyHandle)
 	adminOnly.Handle(tb.OnText, OnTextMessageHandle)
 }
 

@@ -8,12 +8,21 @@ import (
 	"github.com/assimon/luuu/model/request"
 	"github.com/go-redis/redis/v8"
 	"gorm.io/gorm"
+	"strconv"
 	"time"
 )
 
 var (
 	CacheWalletAddressWithAmountToTradeIdKey = "wallet:%s_%v" // 钱包_待支付金额 : 交易号
 )
+
+// buildWalletAmountCacheKey 生成「钱包地址_待支付金额」缓存 key。
+// 金额统一格式化为固定 2 位小数字符串，避免 float 的 %v 表示在「下单锁定」与「链上认款」
+// 两条计算路径下产生 "5.32" / "5.3200000001" 之类的偏差，导致收到款却匹配不到订单。
+// 订单金额按 0.01 递增、精度固定 2 位，链上到账金额在此归一到「分」再比对。
+func buildWalletAmountCacheKey(token string, amount float64) string {
+	return fmt.Sprintf(CacheWalletAddressWithAmountToTradeIdKey, token, strconv.FormatFloat(amount, 'f', 2, 64))
+}
 
 // GetOrderInfoByOrderId 通过客户订单号查询订单
 func GetOrderInfoByOrderId(orderId string) (*mdb.Orders, error) {
@@ -81,7 +90,7 @@ func UpdateOrderIsExpirationById(id uint64) error {
 // GetTradeIdByWalletAddressAndAmount 通过钱包地址，支付金额获取交易号
 func GetTradeIdByWalletAddressAndAmount(token string, amount float64) (string, error) {
 	ctx := context.Background()
-	cacheKey := fmt.Sprintf(CacheWalletAddressWithAmountToTradeIdKey, token, amount)
+	cacheKey := buildWalletAmountCacheKey(token, amount)
 	result, err := dao.Rdb.Get(ctx, cacheKey).Result()
 	if err == redis.Nil {
 		return "", nil
@@ -95,7 +104,7 @@ func GetTradeIdByWalletAddressAndAmount(token string, amount float64) (string, e
 // LockTransaction 锁定交易
 func LockTransaction(token, tradeId string, amount float64, expirationTime time.Duration) error {
 	ctx := context.Background()
-	cacheKey := fmt.Sprintf(CacheWalletAddressWithAmountToTradeIdKey, token, amount)
+	cacheKey := buildWalletAmountCacheKey(token, amount)
 	err := dao.Rdb.Set(ctx, cacheKey, tradeId, expirationTime).Err()
 	return err
 }
@@ -103,7 +112,7 @@ func LockTransaction(token, tradeId string, amount float64, expirationTime time.
 // UnLockTransaction 解锁交易
 func UnLockTransaction(token string, amount float64) error {
 	ctx := context.Background()
-	cacheKey := fmt.Sprintf(CacheWalletAddressWithAmountToTradeIdKey, token, amount)
+	cacheKey := buildWalletAmountCacheKey(token, amount)
 	err := dao.Rdb.Del(ctx, cacheKey).Err()
 	return err
 }
