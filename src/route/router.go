@@ -12,7 +12,11 @@ import (
 // RegisterRoute 路由注册
 func RegisterRoute(e *echo.Echo) {
 	e.Any("/", func(c echo.Context) error {
-		return c.String(http.StatusOK, "hello epusdt, https://github.com/assimon/epusdt")
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"code":    0,
+			"status":  "ok",
+			"message": "服务运行正常",
+		})
 	})
 	// ==== 支付相关=====
 	payRoute := e.Group("/pay")

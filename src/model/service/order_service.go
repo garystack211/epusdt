@@ -4,6 +4,7 @@ import (
 	crand "crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"math/big"
 	"github.com/assimon/luuu/config"
 	"github.com/assimon/luuu/model/dao"
 	"github.com/assimon/luuu/model/data"
@@ -212,20 +213,25 @@ func CalculateAvailableWalletAndAmount(amount float64, walletAddress []mdb.Walle
 		}
 		return availableWallet, nil
 	}
+	// 用随机 3 位小数偏移(0.001~0.999)代替顺序 +0.01 递增:
+	// 金额不可预测(防被人猜到唯一化金额),碰撞则重新随机。
+	decimalBase := decimal.NewFromFloat(amount)
 	for i := 0; i < IncrementalMaximumNumber; i++ {
+		n, err := crand.Int(crand.Reader, big.NewInt(400)) // 0~399
+		if err != nil {
+			return "", 0, err
+		}
+		// 三位小数偏移 = (0~399)+123 → 0.123~0.522(固定 +0.123 底 + 0~0.399 随机)。
+		offset := decimal.NewFromInt(n.Int64() + 123).Div(decimal.NewFromInt(1000))
+		availableAmount = decimalBase.Add(offset).InexactFloat64()
 		token, err := calculateAvailableWalletFunc(availableAmount)
 		if err != nil {
 			return "", 0, err
 		}
-		// 拿不到可用钱包就累加金额
-		if token == "" {
-			decimalOldAmount := decimal.NewFromFloat(availableAmount)
-			decimalIncr := decimal.NewFromFloat(UsdtAmountPerIncrement)
-			availableAmount = decimalOldAmount.Add(decimalIncr).InexactFloat64()
-			continue
+		if token != "" {
+			availableToken = token
+			break
 		}
-		availableToken = token
-		break
 	}
 	return availableToken, availableAmount, nil
 }
