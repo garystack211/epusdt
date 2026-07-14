@@ -1,6 +1,8 @@
 package service
 
 import (
+	crand "crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"github.com/assimon/luuu/config"
 	"github.com/assimon/luuu/model/dao"
@@ -15,7 +17,6 @@ import (
 	"github.com/golang-module/carbon/v2"
 	"github.com/hibiken/asynq"
 	"github.com/shopspring/decimal"
-	"math/rand"
 	"sync"
 	"time"
 )
@@ -136,6 +137,62 @@ func OrderProcessing(req *request.OrderProcessingRequest) error {
 	return nil
 }
 
+// ManualCompleteOrder 手动补单
+// 用于「订单已过期但链上实际已到账」的兜底场景：管理员核对链上交易后，
+// 凭交易号 + 链上交易hash 手动把订单标记为支付成功（不自动回调，回调由 ResendOrderCallback 单独手动触发）。
+func ManualCompleteOrder(tradeId, blockTransactionId string) (*mdb.Orders, error) {
+	if tradeId == "" || blockTransactionId == "" {
+		return nil, constant.OrderRepairParamsErr
+	}
+	order, err := data.GetOrderInfoByTradeId(tradeId)
+	if err != nil {
+		return nil, err
+	}
+	if order.ID <= 0 {
+		return nil, constant.OrderNotExists
+	}
+	if order.Status == mdb.StatusPaySuccess {
+		return nil, constant.OrderAlreadyPaid
+	}
+	// 复用正常认款流程：内部会按 block_transaction_id 去重，避免同一笔链上交易被补单两次
+	req := &request.OrderProcessingRequest{
+		Token:              order.Token,
+		TradeId:            order.TradeId,
+		Amount:             order.ActualAmount,
+		BlockTransactionId: blockTransactionId,
+	}
+	if err = OrderProcessing(req); err != nil {
+		return nil, err
+	}
+	order.BlockTransactionId = blockTransactionId
+	order.Status = mdb.StatusPaySuccess
+	return order, nil
+}
+
+// ResendOrderCallback 重新投递订单回调
+// 用于「补单后手动触发回调」以及「回调失败后手动重发」。仅对已支付订单有效。
+func ResendOrderCallback(tradeId string) (*mdb.Orders, error) {
+	order, err := data.GetOrderInfoByTradeId(tradeId)
+	if err != nil {
+		return nil, err
+	}
+	if order.ID <= 0 {
+		return nil, constant.OrderNotExists
+	}
+	if order.Status != mdb.StatusPaySuccess {
+		return nil, constant.OrderNotPaid
+	}
+	if order.NotifyUrl == "" {
+		return nil, constant.OrderNotifyUrlEmpty
+	}
+	orderCallbackQueue, err := handle.NewOrderCallbackQueue(order)
+	if err != nil {
+		return nil, err
+	}
+	mq.MClient.Enqueue(orderCallbackQueue, asynq.MaxRetry(5))
+	return order, nil
+}
+
 // CalculateAvailableWalletAndAmount 计算可用钱包地址和金额
 func CalculateAvailableWalletAndAmount(amount float64, walletAddress []mdb.WalletAddress) (string, float64, error) {
 	availableToken := ""
@@ -174,11 +231,17 @@ func CalculateAvailableWalletAndAmount(amount float64, walletAddress []mdb.Walle
 }
 
 // GenerateCode 订单号生成
+// 使用 crypto/rand 生成随机后缀，避免 math/rand 可预测导致 trade_id 被枚举/猜测
+//（收银台、状态查询接口无鉴权，trade_id 不可预测是防止他人窥探订单的第一道防线）。
+// 格式：日期(8) + 毫秒时间戳(13) + 8位随机十六进制，总长 29，未超过 trade_id 字段的 varchar(32)。
 func GenerateCode() string {
 	date := time.Now().Format("20060102")
-	r := rand.Intn(1000)
-	code := fmt.Sprintf("%s%d%03d", date, time.Now().UnixNano()/1e6, r)
-	return code
+	buf := make([]byte, 4)
+	if _, err := crand.Read(buf); err != nil {
+		// 极端情况下退化为纳秒时间戳，保证唯一性
+		return fmt.Sprintf("%s%d", date, time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%s%d%s", date, time.Now().UnixNano()/1e6, hex.EncodeToString(buf))
 }
 
 // GetOrderInfoByTradeId 通过交易号获取订单

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/assimon/luuu/model/data"
 	"github.com/assimon/luuu/model/mdb"
+	"github.com/assimon/luuu/model/service"
 	"github.com/gookit/goutil/mathutil"
 	"github.com/gookit/goutil/strutil"
 	tb "gopkg.in/telebot.v3"
@@ -24,6 +25,37 @@ func OnTextMessageHandle(c tb.Context) error {
 		return WalletList(c)
 	}
 	return nil
+}
+
+// OrderRepairHandle 过期订单手动补单：/repair <交易号> <链上交易hash>
+// 只把订单标记为支付成功，不自动回调；回调请随后用 /notify 手动触发。
+func OrderRepairHandle(c tb.Context) error {
+	args := c.Args()
+	if len(args) < 2 {
+		return c.Send("用法：/repair 交易号 链上交易hash\n\n用于对已过期但链上实际已到账的订单手动补单。\n补单成功后请再执行 /notify 交易号 手动发送回调。")
+	}
+	order, err := service.ManualCompleteOrder(args[0], args[1])
+	if err != nil {
+		return c.Send("❌ 补单失败：" + err.Error())
+	}
+	return c.Send(fmt.Sprintf(
+		"✅ 补单成功（订单已标记为支付成功）\n交易号：%s\n订单号：%s\n实际金额：%v USDT\n链上hash：%s\n\n如需通知商户，请执行：\n/notify %s",
+		order.TradeId, order.OrderId, order.ActualAmount, order.BlockTransactionId, order.TradeId))
+}
+
+// OrderNotifyHandle 手动重发回调通知：/notify <交易号>
+func OrderNotifyHandle(c tb.Context) error {
+	args := c.Args()
+	if len(args) < 1 {
+		return c.Send("用法：/notify 交易号\n\n用于补单后或回调失败后，手动向商户重发回调通知。")
+	}
+	order, err := service.ResendOrderCallback(args[0])
+	if err != nil {
+		return c.Send("❌ 回调发送失败：" + err.Error())
+	}
+	return c.Send(fmt.Sprintf(
+		"✅ 已投递回调通知（异步发送，结果以商户接收为准）\n交易号：%s\n回调地址：%s",
+		order.TradeId, order.NotifyUrl))
 }
 
 func WalletList(c tb.Context) error {

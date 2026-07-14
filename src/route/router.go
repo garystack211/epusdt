@@ -4,6 +4,8 @@ import (
 	"github.com/assimon/luuu/controller/comm"
 	"github.com/assimon/luuu/middleware"
 	"github.com/labstack/echo/v4"
+	echomiddleware "github.com/labstack/echo/v4/middleware"
+	"golang.org/x/time/rate"
 	"net/http"
 )
 
@@ -14,6 +16,8 @@ func RegisterRoute(e *echo.Echo) {
 	})
 	// ==== 支付相关=====
 	payRoute := e.Group("/pay")
+	// 收银台/状态检测接口无鉴权，加 IP 限流防止有人枚举 trade_id 批量窥探订单信息
+	payRoute.Use(echomiddleware.RateLimiter(echomiddleware.NewRateLimiterMemoryStore(rate.Limit(10))))
 	// 收银台
 	payRoute.GET("/checkout-counter/:trade_id", comm.Ctrl.CheckoutCounter)
 	// 状态检测

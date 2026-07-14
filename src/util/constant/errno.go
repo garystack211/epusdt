@@ -12,6 +12,10 @@ var Errno = map[int]string{
 	10007: "订单区块已处理",
 	10008: "订单不存在",
 	10009: "无法解析请求参数",
+	10010: "订单已支付，请勿重复补单",
+	10011: "订单尚未支付，无法发送回调",
+	10012: "订单缺少回调地址",
+	10013: "补单参数不完整（需要交易号与链上交易hash）",
 }
 
 var (
@@ -26,6 +30,10 @@ var (
 	OrderBlockAlreadyProcess   = Err(10007)
 	OrderNotExists             = Err(10008)
 	ParamsMarshalErr           = Err(10009)
+	OrderAlreadyPaid           = Err(10010)
+	OrderNotPaid               = Err(10011)
+	OrderNotifyUrlEmpty        = Err(10012)
+	OrderRepairParamsErr       = Err(10013)
 )
 
 type RspError struct {
